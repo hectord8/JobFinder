@@ -1,0 +1,190 @@
+// Prisma schema for JobFinder
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // directUrl is used by Prisma Migrate when DATABASE_URL points at a
+  // connection pooler (e.g. Supabase pgBouncer / Neon pooled endpoint).
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth (NextAuth.js / Auth.js compatible models + credentials password)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  // Hashed password for credentials login. Null when using OAuth/magic link.
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  cvs         Cv[]
+  preference  Preference?
+  savedJobs   SavedJob[]
+  matchScores MatchScore[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// CV storage
+// ---------------------------------------------------------------------------
+
+model Cv {
+  id          String   @id @default(cuid())
+  userId      String
+  fileName    String
+  // Reference to the stored file (Supabase Storage path / Vercel Blob URL /
+  // local path depending on STORAGE_DRIVER).
+  storageKey  String
+  fileUrl     String?
+  // Extracted raw text from the PDF, used for matching.
+  extractedText String  @db.Text
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Job preferences (1:1 with user)
+// ---------------------------------------------------------------------------
+
+model Preference {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  // Target roles, e.g. ["Software Engineer Graduate", "Internship"]
+  targetRoles   String[]
+  keywords      String[]
+  // Fields of interest, e.g. ["Computer Science", "Cyber Security"]
+  fields        String[]
+  location      String?
+  remoteOnly    Boolean  @default(false)
+  // grad | intern | junior | mid | senior
+  seniority     String?
+  // Minimum match score (0-100) to surface a job on the dashboard.
+  minMatchScore Int      @default(0)
+  // Country code used by some providers (e.g. "gb", "us").
+  countryCode   String   @default("gb")
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Job listings (shared across users; matching is per-user)
+// ---------------------------------------------------------------------------
+
+model JobListing {
+  id          String   @id @default(cuid())
+  // Stable dedup key (hash of normalized source/url/title/company).
+  fingerprint String   @unique
+  title       String
+  company     String?
+  location    String?
+  description String   @db.Text
+  salary      String?
+  // Provider id, e.g. "adzuna", "reed", "jooble", "arbeitnow", "jsearch".
+  source      String
+  // Provider's own id for the listing where available.
+  sourceJobId String?
+  url         String
+  remote      Boolean  @default(false)
+  postedAt    DateTime?
+  scrapedAt   DateTime @default(now())
+
+  matchScores MatchScore[]
+  savedBy     SavedJob[]
+
+  @@index([source])
+  @@index([postedAt])
+  @@index([scrapedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Per-user match scores
+// ---------------------------------------------------------------------------
+
+model MatchScore {
+  id           String   @id @default(cuid())
+  userId       String
+  jobListingId String
+  // 0-100
+  score        Int
+  // Algorithm used: "tfidf" | "embedding" — lets us recompute selectively.
+  algorithm    String   @default("tfidf")
+  // Breakdown of matched keywords/skills for UI ("why this matched").
+  matchedTerms String[]
+  computedAt   DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobListing JobListing @relation(fields: [jobListingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobListingId])
+  @@index([userId, score])
+}
+
+// ---------------------------------------------------------------------------
+// Saved / bookmarked jobs
+// ---------------------------------------------------------------------------
+
+model SavedJob {
+  id           String   @id @default(cuid())
+  userId       String
+  jobListingId String
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobListing JobListing @relation(fields: [jobListingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobListingId])
+  @@index([userId])
+}
